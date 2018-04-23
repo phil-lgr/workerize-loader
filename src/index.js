@@ -10,93 +10,103 @@ export default function loader() {}
 const CACHE = {};
 
 loader.pitch = function(request) {
-	this.cacheable(false);
+    this.cacheable(false);
 
-	const options = loaderUtils.getOptions(this) || {};
+    const options = loaderUtils.getOptions(this) || {};
 
-	const cb = this.async();
+    const babelLoaderOptions = options && options.babelLoaderOptions ? options.babelLoaderOptions : null;
+    const workerCompilationPlugins = options && options.plugins && options.plugins.length ? options.plugins: null;
+    const importScripts = options && options.importScripts && options.importScripts.length ? options.importScripts: null;
 
-	const filename = loaderUtils.interpolateName(this, `${options.name || '[hash]'}.worker.js`, {
-		context: options.context || this.rootContext || this.options.context,
-		regExp: options.regExp
-	});
+    const cb = this.async();
 
-	const worker = {};
+    const filename = loaderUtils.interpolateName(this, `${options.name || '[hash]'}.worker.js`, {
+        context: options.context || this.rootContext || this.options.context,
+        regExp: options.regExp
+    });
 
-	worker.options = {
-		filename,
-		chunkFilename: `[id].${filename}`,
-		namedChunkFilename: null
-	};
+    const worker = {};
 
-	worker.compiler = this._compilation.createChildCompiler('worker', worker.options);
+    worker.options = {
+        filename,
+        chunkFilename: `[id].${filename}`,
+        namedChunkFilename: null
+    };
 
-	worker.compiler.apply(new WebWorkerTemplatePlugin(worker.options));
+    worker.compiler = this._compilation.createChildCompiler('worker', worker.options, workerCompilationPlugins);
 
-	if (this.target!=='webworker' && this.target!=='web') {
-		worker.compiler.apply(new NodeTargetPlugin());
-	}
+    worker.compiler.apply(new WebWorkerTemplatePlugin(worker.options));
 
-	worker.compiler.apply(new SingleEntryPlugin(this.context, `!!${path.resolve(__dirname, 'rpc-worker-loader.js')}!${request}`, 'main'));
+    if (this.target!=='webworker' && this.target!=='web') {
+        worker.compiler.apply(new NodeTargetPlugin());
+    }
 
-	const subCache = `subcache ${__dirname} ${request}`;
+    const entry = `!!${babelLoaderOptions ? 'babel-loader?' + JSON.stringify(babelLoaderOptions) + '!': ''}${path.resolve(__dirname, 'rpc-worker-loader.js')}!${request}`;
 
-	worker.compiler.plugin('compilation', (compilation, data) => {
-		if (compilation.cache) {
-			if (!compilation.cache[subCache]) compilation.cache[subCache] = {};
+    worker.compiler.apply(new SingleEntryPlugin(this.context, entry, 'main'));
 
-			compilation.cache = compilation.cache[subCache];
-		}
+    const subCache = `subcache ${__dirname} ${request}`;
 
-		data.normalModuleFactory.plugin('parser', (parser, options) => {
-			parser.plugin('export declaration', expr => {
-				let decl = expr.declaration || expr,
-					{ compilation, current } = parser.state,
-					entry = compilation.entries[0].resource;
+    worker.compiler.plugin('compilation', (compilation, data) => {
+        if (compilation.cache) {
+            if (!compilation.cache[subCache]) compilation.cache[subCache] = {};
 
-				// only process entry exports
-				if (current.resource!==entry) return;
+            compilation.cache = compilation.cache[subCache];
+        }
 
-				let exports = compilation.__workerizeExports || (compilation.__workerizeExports = {});
+        data.normalModuleFactory.plugin('parser', (parser, options) => {
+            parser.plugin('export declaration', expr => {
+                let decl = expr.declaration || expr,
+                    { compilation, current } = parser.state,
+                    entry = compilation.entries[0].resource;
 
-				if (decl.id) {
-					exports[decl.id.name] = true;
-				}
-				else if (decl.declarations) {
-					for (let i=0; i<decl.declarations.length; i++) {
-						exports[decl.declarations[i].id.name] = true;
-					}
-				}
-				else {
-					console.warn('[workerize] unknown export declaration: ', expr);
-				}
-			});
-		});
-	});
+                // only process entry exports
+                if (current.resource!==entry) return;
 
-	worker.compiler.runAsChild((err, entries, compilation) => {
-		if (err) return cb(err);
+                let exports = compilation.__workerizeExports || (compilation.__workerizeExports = {});
 
-		if (entries[0]) {
-			worker.file = entries[0].files[0];
+                if (decl.id) {
+                    exports[decl.id.name] = true;
+                }
+                else if (decl.declarations) {
+                    for (let i=0; i<decl.declarations.length; i++) {
+                        exports[decl.declarations[i].id.name] = true;
+                    }
+                }
+                else {
+                    console.warn('[workerize] unknown export declaration: ', expr);
+                }
+            });
+        });
+    });
 
-			let contents = compilation.assets[worker.file].source();
-			let exports = Object.keys(CACHE[worker.file] = compilation.__workerizeExports || CACHE[worker.file] || {});
+    worker.compiler.runAsChild((err, entries, compilation) => {
+        if (err) return cb(err);
 
-			// console.log('Workerized exports: ', exports.join(', '));
+        if (entries[0]) {
+            worker.file = entries[0].files[0];
 
-			if (options.inline) {
-				worker.url = `URL.createObjectURL(new Blob([${JSON.stringify(contents)}]))`;
-			}
-			else {
-				worker.url = `__webpack_public_path__ + ${JSON.stringify(worker.file)}`;
-			}
+            let contents = compilation.assets[worker.file].source();
+            let exports = Object.keys(CACHE[worker.file] = compilation.__workerizeExports || CACHE[worker.file] || {});
 
-			if (options.fallback === false) {
-				delete this._compilation.assets[worker.file];
-			}
+            // console.log('Workerized exports: ', exports.join(', '));
 
-			return cb(null, `
+            if (importScripts){
+                contents = `try{self.importScripts(self.location.origin + '${'/' + importScripts.join(',')}')} catch(e){console.log(e)};\n` + contents;
+            }
+
+            if (options.inline) {
+                worker.url = `URL.createObjectURL(new Blob([${JSON.stringify(contents)}]))`;
+            }
+            else {
+                worker.url = `__webpack_public_path__ + ${JSON.stringify(worker.file)}`;
+            }
+
+            if (options.fallback === false) {
+                delete this._compilation.assets[worker.file];
+            }
+
+            return cb(null, `
 				var addMethods = require(${loaderUtils.stringifyRequest(this, path.resolve(__dirname, 'rpc-wrapper.js'))})
 				var methods = ${JSON.stringify(exports)}
 				module.exports = function() {
@@ -106,8 +116,8 @@ loader.pitch = function(request) {
 					return w
 				}
 			`);
-		}
+        }
 
-		return cb(null, null);
-	});
+        return cb(null, null);
+    });
 };
