@@ -1,34 +1,34 @@
 export default function addMethods(worker, methods) {
-	let c = 0;
-	let callbacks = {};
-	worker.addEventListener('message', (e) => {
-		let d = e.data;
-		if (d.type!=='RPC') return;
-		if (d.id) {
-			let f = callbacks[d.id];
-			if (f) {
-				delete callbacks[d.id];
-				if (d.error) {
-					let workerError = Error(d.error && d.error.message ? d.error.message : 'Error in worker');
-					if (d.error && d.error.stack) workerError.stack = d.error.stack;
-					if (d.error && d.error.name) workerError.name = d.error.name;
-					f[1](workerError);
-				}
-				else f[0](d.result);
-			}
-		}
-		else {
-			let evt = document.createEvent('Event');
-			evt.initEvent(d.method, false, false);
-			evt.data = d.params;
-			worker.dispatchEvent(evt);
-		}
-	});
-	methods.forEach( method => {
-		worker[method] = (...params) => new Promise( (a, b) => {
-			let id = ++c;
-			callbacks[id] = [a, b];
-			worker.postMessage({ type: 'RPC', id, method, params });
-		});
-	});
+    let c = 0;
+    let callbacks = {};
+    worker.addEventListener('message', (e) => {
+        let d = e.data;
+        if (d.type!=='RPC') return;
+        if (d.id) {
+            let f = callbacks[d.id];
+            if (f) {
+                delete callbacks[d.id];
+                if (d.error) {
+                    let workerError = Error(d.error && d.error.message ? d.error.message : 'Error in worker');
+                    if (d.error && d.error.stack) workerError.stack = d.error.stack;
+                    if (d.error && d.error.name) workerError.name = d.error.name;
+                    f[1](workerError);
+                }
+                else f[0](d.result);
+            }
+        }
+        else {
+            let evt = document.createEvent('Event');
+            evt.initEvent(d.method, false, false);
+            evt.data = d.params;
+            worker.dispatchEvent(evt);
+        }
+    });
+    methods.forEach( method => {
+        worker[method] = (...params) => new Promise( (a, b) => {
+            let id = ++c;
+            callbacks[id] = [a, b];
+            worker.postMessage({ type: 'RPC', id, method, params });
+        });
+    });
 }

@@ -14,6 +14,10 @@ loader.pitch = function(request) {
 
 	const options = loaderUtils.getOptions(this) || {};
 
+	const babelLoaderOptions = options && options.babelLoaderOptions ? options.babelLoaderOptions : null;
+	const workerCompilationPlugins = options && options.plugins && options.plugins.length ? options.plugins: null;
+	const importScripts = options && options.importScripts && options.importScripts.length ? options.importScripts: null;
+
 	const cb = this.async();
 
 	const filename = loaderUtils.interpolateName(this, `${options.name || '[hash]'}.worker.js`, {
@@ -29,7 +33,7 @@ loader.pitch = function(request) {
 		namedChunkFilename: null
 	};
 
-	worker.compiler = this._compilation.createChildCompiler('worker', worker.options);
+	worker.compiler = this._compilation.createChildCompiler('worker', worker.options, workerCompilationPlugins);
 
 	worker.compiler.apply(new WebWorkerTemplatePlugin(worker.options));
 
@@ -37,16 +41,18 @@ loader.pitch = function(request) {
 		worker.compiler.apply(new NodeTargetPlugin());
 	}
 
-	worker.compiler.apply(new SingleEntryPlugin(this.context, `!!${path.resolve(__dirname, 'rpc-worker-loader.js')}!${request}`, 'main'));
+	const entry = `!!${babelLoaderOptions ? 'babel-loader?' + JSON.stringify(babelLoaderOptions) + '!': ''}${path.resolve(__dirname, 'rpc-worker-loader.js')}!${request}`;
+
+	worker.compiler.apply(new SingleEntryPlugin(this.context, entry, 'main'));
 
 	const subCache = `subcache ${__dirname} ${request}`;
 
 	worker.compiler.plugin('compilation', (compilation, data) => {
-		if (compilation.cache) {
-			if (!compilation.cache[subCache]) compilation.cache[subCache] = {};
-
-			compilation.cache = compilation.cache[subCache];
-		}
+		// if (compilation.cache) {
+		//     if (!compilation.cache[subCache]) compilation.cache[subCache] = {};
+		//
+		//     compilation.cache = compilation.cache[subCache];
+		// }
 
 		data.normalModuleFactory.plugin('parser', (parser, options) => {
 			parser.plugin('export declaration', expr => {
@@ -83,29 +89,35 @@ loader.pitch = function(request) {
 			let contents = compilation.assets[worker.file].source();
 			let exports = Object.keys(CACHE[worker.file] = compilation.__workerizeExports || CACHE[worker.file] || {});
 
-			// console.log('Workerized exports: ', exports.join(', '));
-
 			if (options.inline) {
+				if (importScripts){
+					contents = `try{self.importScripts(self.location.origin + '${'/' + importScripts.join(',')}')} catch(e){console.log(e)};\n` + contents;
+				}
 				worker.url = `URL.createObjectURL(new Blob([${JSON.stringify(contents)}]))`;
 			}
 			else {
-				worker.url = `__webpack_public_path__ + ${JSON.stringify(worker.file)}`;
+				worker.url = `${JSON.stringify(worker.file)}`;
 			}
 
 			if (options.fallback === false) {
 				delete this._compilation.assets[worker.file];
 			}
 
-			return cb(null, `
+			const loader = `
 				var addMethods = require(${loaderUtils.stringifyRequest(this, path.resolve(__dirname, 'rpc-wrapper.js'))})
 				var methods = ${JSON.stringify(exports)}
 				module.exports = function() {
-					var w = new Worker(${worker.url}, { name: ${JSON.stringify(filename)} })
+				    console.log(self.location)
+				    var base = window.location.protocol +  "//" + window.location.host;
+				    var scripts = 'data:application/javascript,window=self;try{importScripts("' + base + '"+ "/" + ${JSON.stringify(importScripts[0])});} catch(e){console.log(e)}';
+					var w = new Worker(scripts + ';try{importScripts("' + base + '" + "/" + ${worker.url});}catch(e){console.log(e);}', { name: ${JSON.stringify(filename)} })
 					addMethods(w, methods)
 					${ options.ready ? 'w.ready = new Promise(function(r) { w.addEventListener("ready", function(){ r(w) }) })' : '' }
 					return w
 				}
-			`);
+			`;
+
+			return cb(null, loader);
 		}
 
 		return cb(null, null);
