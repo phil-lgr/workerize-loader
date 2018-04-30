@@ -106,16 +106,24 @@ loader.pitch = function(request) {
                 delete this._compilation.assets[worker.file];
             }
 
-            return cb(null, `
+            if (importScripts){
+            	worker.scripts = `data:application/javascript,window=self;try{importScripts(self.location.origin + '${'/' + importScripts[0]}');} catch(e)console.log(e)`;
+			}
+
+            const loader = `
 				var addMethods = require(${loaderUtils.stringifyRequest(this, path.resolve(__dirname, 'rpc-wrapper.js'))})
 				var methods = ${JSON.stringify(exports)}
 				module.exports = function() {
-					var w = new Worker(${worker.url}, { name: ${JSON.stringify(filename)} })
+					var w = new Worker('${worker.scripts ? worker.scripts: ''};importScripts(${worker.url});')
 					addMethods(w, methods)
 					${ options.ready ? 'w.ready = new Promise(function(r) { w.addEventListener("ready", function(){ r(w) }) })' : '' }
 					return w
 				}
-			`);
+			`;
+
+            console.log(loader);
+
+			return cb(null, loader);
         }
 
         return cb(null, null);
